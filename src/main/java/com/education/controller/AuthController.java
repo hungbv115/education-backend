@@ -1,12 +1,14 @@
 package com.education.controller;
 
 import com.education.model.dto.*;
+import com.education.model.entity.DeviceType;
 import com.education.model.entity.User;
 import com.education.model.entity.VerificationToken;
 import com.education.registration.OnRegistrationCompleteEvent;
 import com.education.security.HandleJWT;
 import com.education.service.MailSender;
 import com.education.service.UserService;
+import com.google.zxing.WriterException;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -25,6 +27,8 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.annotation.*;
 
 import javax.validation.Valid;
+import java.io.IOException;
+import java.io.UnsupportedEncodingException;
 import java.util.Calendar;
 import java.util.Locale;
 import java.util.Optional;
@@ -51,6 +55,22 @@ public class AuthController {
         this.handleJWT = handleJWT;
     }
 
+    @PostMapping("/login-qr")
+    public String login(
+            @RequestParam String username,
+            @RequestParam String deviceId,
+            @RequestParam DeviceType deviceType) {
+        return userService.normalLogin(username, deviceId, deviceType);
+    }
+
+    @PostMapping("/remote-login")
+    public String remoteLogin(
+            @RequestParam String username,
+            @RequestParam String targetDeviceId) {
+        return userService.remoteLogin(username, targetDeviceId);
+    }
+
+    // đăng nhập
     @PostMapping("/login")
     public ResponseEntity<LoginResponse> login(@RequestBody AuthRequest request) throws Throwable {
         try {
@@ -82,7 +102,7 @@ public class AuthController {
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
 
-    // User activation - verification
+    // Kích hoạt người dùng - xác minh
     @GetMapping("/user/resendRegistrationToken")
     public ResponseEntity<Void> resendRegistrationToken(final HttpServletRequest request, @RequestParam("token") final String existingToken) {
 
@@ -111,7 +131,7 @@ public class AuthController {
         return messages.getMessage("message.accountVerified", null, locale);
     }
 
-    // Reset password
+    // Đặt lại mật khẩu
     @PostMapping("/user/resetPassword")
     public ResponseEntity<String> resetPassword(final HttpServletRequest request, @RequestParam("email") final String userEmail) {
         final User user = userService.findUserByEmail(userEmail);
@@ -124,7 +144,7 @@ public class AuthController {
         return ResponseEntity.ok(messages.getMessage("message.resetPasswordEmail", null, request.getLocale()));
     }
 
-    // Save password
+    // Lưu mật khẩu
     @PostMapping("/user/savePassword")
     public ResponseEntity<String> savePassword(final Locale locale, @Valid PasswordDto passwordDto) {
 
@@ -141,6 +161,13 @@ public class AuthController {
         } else {
             return ResponseEntity.badRequest().body(messages.getMessage("auth.message.invalid", null, locale));
         }
+    }
+
+    // lấy QR đăng nhập
+    @PostMapping("/user/loginByQr")
+    public ResponseEntity<String> loginByQr(@RequestParam("email") final String email,
+                                            @RequestParam String targetDeviceId) throws WriterException, IOException {
+        return ResponseEntity.ok(userService.generateQRUrl(email, targetDeviceId));
     }
 
     private SimpleMailMessage constructResendVerificationTokenEmail(final String contextPath, final Locale locale, final VerificationToken newToken, final User user) {

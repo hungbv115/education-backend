@@ -2,25 +2,31 @@ package com.education.service.impl;
 
 import com.education.error.UserAlreadyExistException;
 import com.education.model.dto.UserDto;
-import com.education.model.entity.PasswordResetToken;
-import com.education.model.entity.User;
-import com.education.model.entity.UserLocation;
-import com.education.model.entity.VerificationToken;
+import com.education.model.entity.*;
 import com.education.repository.*;
+import com.education.security.HandleJWT;
 import com.education.service.UserService;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.WriterException;
+import com.google.zxing.client.j2se.MatrixToImageWriter;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
 import com.maxmind.geoip2.DatabaseReader;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.env.Environment;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.InetAddress;
-import java.util.Calendar;
-import java.util.Collections;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 
 @Service
 @Transactional
@@ -40,13 +46,68 @@ public class UserServiceImpl implements UserService {
     @Autowired
     private PasswordResetTokenRepository passwordResetTokenRepository;
 
-    public UserServiceImpl(UserRepository userRepository, PasswordEncoder passwordEncoder, UserLocationRepository userLocationRepository, RoleRepository roleRepository, Environment env, VerificationTokenRepository tokenRepository) {
+    @Autowired
+    private DeviceRepository deviceRepository;
+
+    private final HandleJWT handleJWT;
+
+    private final AuthenticationManager authenticationManager;
+
+    public UserServiceImpl(UserRepository userRepository, PasswordEncoder passwordEncoder, UserLocationRepository userLocationRepository, RoleRepository roleRepository, Environment env, VerificationTokenRepository tokenRepository, HandleJWT handleJWT, AuthenticationManager authenticationManager) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.userLocationRepository = userLocationRepository;
         this.roleRepository = roleRepository;
         this.env = env;
         this.tokenRepository = tokenRepository;
+        this.handleJWT = handleJWT;
+        this.authenticationManager = authenticationManager;
+    }
+
+    @Transactional
+    public String normalLogin(String email, String deviceId, DeviceType deviceType) {
+        // Xác thực username và password
+        User user = userRepository.findByEmail(email);
+
+        // Kiểm tra trạng thái của thiết bị
+        Optional<Device> existingDevice = deviceRepository.findByUserIdAndDeviceId(user.getId(), deviceId);
+        if (existingDevice.isPresent()) {
+            if (existingDevice.get().isLoggedIn()) {
+                authenticationManager.authenticate(
+                        new UsernamePasswordAuthenticationToken(
+                                user.getEmail(),
+                                user.getPassword()
+                        )
+                );
+                return handleJWT.generateToken(user.getEmail());
+            } else {
+                return "Device is waiting for remote login approval.";
+            }
+        }
+
+        // Thêm thiết bị mới vào trạng thái "chờ"
+        Device newDevice = new Device();
+        newDevice.setUser(user);
+        newDevice.setDeviceId(deviceId);
+        newDevice.setDeviceType(deviceType);
+        newDevice.setLoggedIn(false);
+        newDevice.setLastLoginTime(java.time.LocalDateTime.now());
+        deviceRepository.save(newDevice);
+
+        return "Device is waiting for remote login approval.";
+    }
+
+    @Transactional
+    public String remoteLogin(String username, String deviceId) {
+        User user = userRepository.findByEmail(username);
+
+        Device device = deviceRepository.findByUserIdAndDeviceId(user.getId(), deviceId)
+                .orElseThrow(() -> new RuntimeException("No pending device found"));
+
+        device.setLoggedIn(true);
+        deviceRepository.save(device);
+
+        return "Device approved for login.";
     }
 
     @Override
@@ -151,6 +212,31 @@ public class UserServiceImpl implements UserService {
         userRepository.save(user);
 
         passwordResetTokenRepository.deleteTokenAfterResetSuccess(token);
+    }
+
+    @Override
+    public User updateUser2FA(boolean use2FA) {
+        final Authentication curAuth = SecurityContextHolder.getContext()
+                .getAuthentication();
+        User currentUser = (User) curAuth.getPrincipal();
+        currentUser.setUsing2FA(use2FA);
+        currentUser = userRepository.save(currentUser);
+        final Authentication auth = new UsernamePasswordAuthenticationToken(currentUser, currentUser.getPassword(), curAuth.getAuthorities());
+        SecurityContextHolder.getContext()
+                .setAuthentication(auth);
+        return currentUser;
+    }
+
+    @Override
+    public String generateQRUrl(String email, String deviceId) throws WriterException, IOException {
+        String data = "http://localhost:8080/api/remote-login?username=" + email + "&targetDeviceId=" + deviceId;
+        QRCodeWriter qrCodeWriter = new QRCodeWriter();
+        BitMatrix matrix = qrCodeWriter.encode(data, BarcodeFormat.QR_CODE, 200, 200);
+
+        ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        MatrixToImageWriter.writeToStream(matrix, "PNG", outputStream);
+        byte[] pngByteArray = outputStream.toByteArray();
+        return Arrays.toString(pngByteArray);
     }
 
     private boolean emailExists(final String email) {
