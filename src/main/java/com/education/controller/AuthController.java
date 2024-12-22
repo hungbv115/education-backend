@@ -1,9 +1,6 @@
 package com.education.controller;
 
-import com.education.model.dto.ApiErrorResponse;
-import com.education.model.dto.AuthRequest;
-import com.education.model.dto.LoginResponse;
-import com.education.model.dto.UserDto;
+import com.education.model.dto.*;
 import com.education.model.entity.User;
 import com.education.model.entity.VerificationToken;
 import com.education.registration.OnRegistrationCompleteEvent;
@@ -30,6 +27,8 @@ import org.springframework.web.bind.annotation.*;
 import javax.validation.Valid;
 import java.util.Calendar;
 import java.util.Locale;
+import java.util.Optional;
+import java.util.UUID;
 
 @RestController
 @RequestMapping("/api")
@@ -112,14 +111,46 @@ public class AuthController {
         return messages.getMessage("message.accountVerified", null, locale);
     }
 
+    // Reset password
+    @PostMapping("/user/resetPassword")
+    public ResponseEntity<String> resetPassword(final HttpServletRequest request, @RequestParam("email") final String userEmail) {
+        final User user = userService.findUserByEmail(userEmail);
+        if (user != null) {
+            final String token = UUID.randomUUID().toString();
+            userService.createPasswordResetTokenForUser(user, token);
+            mailSender.send(constructResetTokenEmail(getAppUrl(request), request.getLocale(), token, user));
+        }
+
+        return ResponseEntity.ok(messages.getMessage("message.resetPasswordEmail", null, request.getLocale()));
+    }
+
+    // Save password
+    @PostMapping("/user/savePassword")
+    public ResponseEntity<String> savePassword(final Locale locale, @Valid PasswordDto passwordDto) {
+
+        final String result = userService.validatePasswordResetToken(passwordDto.getToken());
+
+        if(result != null) {
+            return ResponseEntity.ok(messages.getMessage("auth.message." + result, null, locale));
+        }
+
+        Optional<User> user = userService.getUserByPasswordResetToken(passwordDto.getToken());
+        if(user.isPresent()) {
+            userService.changeUserPassword(user.get(), passwordDto.getNewPassword(), passwordDto.getToken());
+            return ResponseEntity.ok(messages.getMessage("message.resetPasswordSuc", null, locale));
+        } else {
+            return ResponseEntity.badRequest().body(messages.getMessage("auth.message.invalid", null, locale));
+        }
+    }
+
     private SimpleMailMessage constructResendVerificationTokenEmail(final String contextPath, final Locale locale, final VerificationToken newToken, final User user) {
-        final String confirmationUrl = contextPath + "/registrationConfirm?token=" + newToken.getToken();
+        final String confirmationUrl = contextPath + "/api/registrationConfirm?token=" + newToken.getToken();
         final String message = messages.getMessage("message.resendToken", null, locale);
         return constructEmail("Resend Registration Token", message + " \r\n" + confirmationUrl, user);
     }
 
     private SimpleMailMessage constructResetTokenEmail(final String contextPath, final Locale locale, final String token, final User user) {
-        final String url = contextPath + "/user/changePassword?token=" + token;
+        final String url = contextPath + "/api/user/changePassword?token=" + token;
         final String message = messages.getMessage("message.resetPassword", null, locale);
         return constructEmail("Reset Password", message + " \r\n" + url, user);
     }

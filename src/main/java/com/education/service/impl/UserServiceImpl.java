@@ -2,13 +2,11 @@ package com.education.service.impl;
 
 import com.education.error.UserAlreadyExistException;
 import com.education.model.dto.UserDto;
+import com.education.model.entity.PasswordResetToken;
 import com.education.model.entity.User;
 import com.education.model.entity.UserLocation;
 import com.education.model.entity.VerificationToken;
-import com.education.repository.RoleRepository;
-import com.education.repository.UserLocationRepository;
-import com.education.repository.UserRepository;
-import com.education.repository.VerificationTokenRepository;
+import com.education.repository.*;
 import com.education.service.UserService;
 import com.maxmind.geoip2.DatabaseReader;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,7 +17,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.net.InetAddress;
+import java.util.Calendar;
 import java.util.Collections;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -36,6 +36,9 @@ public class UserServiceImpl implements UserService {
     @Autowired
     @Qualifier("GeoIPCountry")
     private DatabaseReader databaseReader;
+
+    @Autowired
+    private PasswordResetTokenRepository passwordResetTokenRepository;
 
     public UserServiceImpl(UserRepository userRepository, PasswordEncoder passwordEncoder, UserLocationRepository userLocationRepository, RoleRepository roleRepository, Environment env, VerificationTokenRepository tokenRepository) {
         this.userRepository = userRepository;
@@ -117,12 +120,54 @@ public class UserServiceImpl implements UserService {
         userRepository.save(user);
     }
 
+    @Override
+    public User findUserByEmail(String email) {
+        return userRepository.findByEmail(email);
+    }
+
+    @Override
+    public void createPasswordResetTokenForUser(User user, String token) {
+        PasswordResetToken resetToken = new PasswordResetToken(token, user);
+        passwordResetTokenRepository.save(resetToken);
+    }
+
+    @Override
+    public String validatePasswordResetToken(String token) {
+        final PasswordResetToken passToken = passwordResetTokenRepository.findByToken(token);
+
+        return !isTokenFound(passToken) ? "invalidToken"
+                : isTokenExpired(passToken) ? "expired"
+                : null;
+    }
+
+    @Override
+    public Optional<User> getUserByPasswordResetToken(String token) {
+        return Optional.ofNullable(passwordResetTokenRepository.findByToken(token) .getUser());
+    }
+
+    @Override
+    public void changeUserPassword(final User user, final String password, String token) {
+        user.setPassword(passwordEncoder.encode(password));
+        userRepository.save(user);
+
+        passwordResetTokenRepository.deleteTokenAfterResetSuccess(token);
+    }
+
     private boolean emailExists(final String email) {
         return userRepository.findByEmail(email) != null;
     }
 
     private boolean isGeoIpLibEnabled() {
         return Boolean.parseBoolean(env.getProperty("geo.ip.lib.enabled"));
+    }
+
+    private boolean isTokenFound(PasswordResetToken passToken) {
+        return passToken != null;
+    }
+
+    private boolean isTokenExpired(PasswordResetToken passToken) {
+        final Calendar cal = Calendar.getInstance();
+        return passToken.getExpiryDate().before(cal.getTime());
     }
 
 }
